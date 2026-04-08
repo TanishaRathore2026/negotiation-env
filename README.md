@@ -12,7 +12,16 @@ Negotiation is a fundamental human activity that extends far beyond simple barte
 What makes this unique as an RL environment is its structured yet open-ended nature. Agents must communicate their reasoning via natural language, submit structured numerical offers, and decide whether to accept ongoing proposals—all within a strict turn limit. 
 
 The negotiation loop works via a sequence of turns where the agent evaluates the current state, formulates reasoning, and submits a counteroffer or an acceptance. The opponent responds programmatically based on predefined constraints. The episode terminates when an agreement is reached, maximum turns are exhausted, or an invalid move is made.
-
+---
+title: Negotiation Env
+emoji: 🤝
+colorFrom: blue
+colorTo: green
+sdk: docker
+port: 7860
+tags:
+  - openenv
+---
 ## Action Space
 
 | Field | Type | Description |
