@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # 🤝 AI Negotiation Environment
 
 ## Overview
@@ -136,3 +137,15 @@ curl -X POST http://localhost:7860/grade
 | API_BASE_URL | LLM API endpoint |
 | MODEL_NAME | Model identifier |
 | HF_TOKEN | Hugging Face token |
+=======
+---
+title: Tan12space
+emoji: 👁
+colorFrom: red
+colorTo: red
+sdk: docker
+pinned: false
+---
+
+Check out the configuration reference at https://huggingface.co/docs/hub/spaces-config-reference
+>>>>>>> c1396f95751c16c0538d11a02c8dfa577c212699
