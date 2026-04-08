@@ -1,0 +1,159 @@
+{
+  "task_1_easy": [
+    {
+      "scenario_id": "price_001",
+      "item": "Used 2022 MacBook Pro 14-inch",
+      "seller_min_price": 900.0,
+      "seller_starting_price": 1400.0,
+      "buyer_max_budget": 1200.0,
+      "buyer_ideal_price": 950.0,
+      "description": "You are buying a used 2022 MacBook Pro 14-inch. The seller is asking $1,400. Your budget is $1,200 and you'd ideally pay around $950. Negotiate the best price you can."
+    },
+    {
+      "scenario_id": "price_002",
+      "item": "Vintage Leather Sofa",
+      "seller_min_price": 500.0,
+      "seller_starting_price": 850.0,
+      "buyer_max_budget": 700.0,
+      "buyer_ideal_price": 550.0,
+      "description": "You are buying a vintage leather sofa from a local seller. Listed at $850. Your budget is $700 and you'd ideally pay $550. Negotiate the best deal."
+    },
+    {
+      "scenario_id": "price_003",
+      "item": "Domain Name 'quicklaunch.io'",
+      "seller_min_price": 2000.0,
+      "seller_starting_price": 5000.0,
+      "buyer_max_budget": 3500.0,
+      "buyer_ideal_price": 2200.0,
+      "description": "You want to buy the domain 'quicklaunch.io' for your startup. The owner is asking $5,000. You can spend up to $3,500 and would ideally pay $2,200. Negotiate."
+    }
+  ],
+  "task_2_medium": [
+    {
+      "scenario_id": "job_001",
+      "company": "NovaTech Solutions",
+      "role": "Senior Software Engineer",
+      "issues": [
+        {
+          "name": "salary",
+          "employer_initial": 120000.0,
+          "employer_min": 110000.0,
+          "candidate_ideal": 145000.0,
+          "candidate_min": 125000.0,
+          "weight": 0.5
+        },
+        {
+          "name": "remote_days",
+          "employer_initial": 1,
+          "employer_min": 0,
+          "candidate_ideal": 4,
+          "candidate_min": 2,
+          "weight": 0.3
+        },
+        {
+          "name": "start_date_weeks",
+          "employer_initial": 2,
+          "employer_min": 1,
+          "candidate_ideal": 6,
+          "candidate_min": 3,
+          "weight": 0.2
+        }
+      ],
+      "description": "You received an offer from NovaTech Solutions for Senior Software Engineer. They offer $120K salary, 1 remote day/week, and want you to start in 2 weeks. Negotiate for better salary ($125K–$145K ideal), more remote days (2–4 ideal), and a later start (3–6 weeks ideal)."
+    },
+    {
+      "scenario_id": "job_002",
+      "company": "Greenfield Analytics",
+      "role": "Data Science Lead",
+      "issues": [
+        {
+          "name": "salary",
+          "employer_initial": 135000.0,
+          "employer_min": 125000.0,
+          "candidate_ideal": 160000.0,
+          "candidate_min": 140000.0,
+          "weight": 0.5
+        },
+        {
+          "name": "remote_days",
+          "employer_initial": 2,
+          "employer_min": 1,
+          "candidate_ideal": 5,
+          "candidate_min": 3,
+          "weight": 0.3
+        },
+        {
+          "name": "start_date_weeks",
+          "employer_initial": 1,
+          "employer_min": 1,
+          "candidate_ideal": 4,
+          "candidate_min": 2,
+          "weight": 0.2
+        }
+      ],
+      "description": "You got an offer from Greenfield Analytics for Data Science Lead. Offered $135K, 2 remote days, start in 1 week. Negotiate for $140K–$160K salary, 3–5 remote days, and 2–4 weeks before starting."
+    }
+  ],
+  "task_3_hard": [
+    {
+      "scenario_id": "vendor_001",
+      "project": "E-commerce Platform Redesign",
+      "budget": 50000.0,
+      "ideal_delivery_days": 45,
+      "ideal_payment_terms_days": 60,
+      "vendors": [
+        {
+          "vendor_id": "vendor_a",
+          "vendor_name": "AlphaWeb Studios",
+          "initial_price": 55000.0,
+          "min_price": 38000.0,
+          "initial_delivery_days": 90,
+          "min_delivery_days": 50,
+          "initial_payment_terms_days": 15,
+          "max_payment_terms_days": 45
+        },
+        {
+          "vendor_id": "vendor_b",
+          "vendor_name": "ByteCraft Digital",
+          "initial_price": 48000.0,
+          "min_price": 42000.0,
+          "initial_delivery_days": 60,
+          "min_delivery_days": 40,
+          "initial_payment_terms_days": 30,
+          "max_payment_terms_days": 60
+        }
+      ],
+      "description": "You need to hire a vendor for an e-commerce platform redesign. Budget: $50,000. Ideal delivery: 45 days. Ideal payment terms: Net-60. Two vendors are bidding: AlphaWeb Studios ($55K, 90 days, Net-15) and ByteCraft Digital ($48K, 60 days, Net-30). Negotiate with both and pick the better overall deal."
+    },
+    {
+      "scenario_id": "vendor_002",
+      "project": "Mobile App Development",
+      "budget": 80000.0,
+      "ideal_delivery_days": 60,
+      "ideal_payment_terms_days": 45,
+      "vendors": [
+        {
+          "vendor_id": "vendor_a",
+          "vendor_name": "AppForge Inc.",
+          "initial_price": 95000.0,
+          "min_price": 68000.0,
+          "initial_delivery_days": 120,
+          "min_delivery_days": 70,
+          "initial_payment_terms_days": 14,
+          "max_payment_terms_days": 30
+        },
+        {
+          "vendor_id": "vendor_b",
+          "vendor_name": "CodeNest Labs",
+          "initial_price": 78000.0,
+          "min_price": 72000.0,
+          "initial_delivery_days": 75,
+          "min_delivery_days": 55,
+          "initial_payment_terms_days": 30,
+          "max_payment_terms_days": 60
+        }
+      ],
+      "description": "You need a mobile app built. Budget: $80,000. Ideal delivery: 60 days. Ideal payment terms: Net-45. Two vendors: AppForge Inc. ($95K, 120 days, Net-14) and CodeNest Labs ($78K, 75 days, Net-30). Negotiate both down and choose the best deal considering price, speed, and payment terms."
+    }
+  ]
+}
