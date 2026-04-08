@@ -6,9 +6,9 @@ Runs an LLM agent against all 3 tasks sequentially and produces baseline
 scores with strict structured logging.
 
 Required environment variables:
-  API_BASE_URL  — LLM API endpoint (default: https://api-inference.huggingface.co/v1)
-  MODEL_NAME    — Model identifier  (default: meta-llama/Llama-3.1-8B-Instruct)
-  HF_TOKEN      — Hugging Face API token
+  API_BASE_URL — LLM API endpoint (default: https://api-inference.huggingface.co/v1)
+  MODEL_NAME   — Model identifier (default: meta-llama/Llama-3.1-8B-Instruct)
+  HF_TOKEN     — Hugging Face API token
 
 Structured log format (MANDATORY — do not deviate):
   [START] {"task_id": "...", "scenario": "..."}
@@ -31,34 +31,38 @@ import time
 from typing import Any
 
 import requests
-from openai import OpenAI
 
 # ---------------------------------------------------------------------------
 # Configuration — all from environment variables
 # ---------------------------------------------------------------------------
-client = OpenAI(
-    base_url=os.environ.get("API_BASE_URL", "https://router.huggingface.co/v1"),
-    api_key=os.environ.get("HF_TOKEN", "hf-placeholder"),
-)
+
+API_BASE_URL = os.environ.get("API_BASE_URL", "https://router.huggingface.co/v1")
+HF_TOKEN = os.environ.get("HF_TOKEN", "")
 MODEL = os.environ.get("MODEL_NAME", "meta-llama/Llama-3.1-8B-Instruct")
 ENV_URL = os.environ.get("ENV_URL", "http://localhost:7860")
 
+# ---------------------------------------------------------------------------
+# Safe OpenAI client initialization — NEVER crash at module level
+# ---------------------------------------------------------------------------
+
+client = None
+
+try:
+    from openai import OpenAI
+    client = OpenAI(
+        base_url=API_BASE_URL,
+        api_key=HF_TOKEN if HF_TOKEN else "hf-placeholder",
+    )
+    print(f"[INFO] OpenAI client initialized. Base URL: {API_BASE_URL}", flush=True)
+except Exception as e:
+    print(f"[WARN] Could not initialize OpenAI client: {e}", flush=True)
+    print("[WARN] Will use fallback heuristic agent.", flush=True)
 
 # ---------------------------------------------------------------------------
 # call_env — HTTP helper for environment API
 # ---------------------------------------------------------------------------
 
 def call_env(endpoint: str, method: str = "GET", data: dict | None = None) -> dict:
-    """Make an HTTP request to the environment server.
-
-    Args:
-        endpoint: API path (e.g. "/reset", "/step").
-        method: "GET" or "POST".
-        data: JSON body for POST requests.
-
-    Returns:
-        Parsed JSON response as dict.
-    """
     url = f"{ENV_URL}{endpoint}"
     try:
         if method == "POST":
@@ -69,14 +73,16 @@ def call_env(endpoint: str, method: str = "GET", data: dict | None = None) -> di
         return resp.json()
     except requests.exceptions.ConnectionError:
         print(f"[ERROR] Cannot connect to environment at {url}", flush=True)
-        sys.exit(1)
+        return {}
     except requests.exceptions.Timeout:
         print(f"[ERROR] Request timed out: {method} {url}", flush=True)
         return {}
     except requests.exceptions.HTTPError as e:
         print(f"[ERROR] HTTP {e.response.status_code}: {e.response.text[:200]}", flush=True)
         return {}
-
+    except Exception as e:
+        print(f"[ERROR] Unexpected error calling env: {e}", flush=True)
+        return {}
 
 # ---------------------------------------------------------------------------
 # System prompts per task
@@ -137,24 +143,17 @@ _SYSTEM_PROMPTS = {
     "task_3": SYSTEM_PROMPT_TASK3,
 }
 
-
 # ---------------------------------------------------------------------------
-# agent_decide — ask the LLM for the next action
+# agent_decide — ask the LLM for the next action (with safe fallback)
 # ---------------------------------------------------------------------------
 
 def agent_decide(observation: dict, task_id: str) -> dict:
-    """Build a prompt from the observation and ask the LLM for an action.
+    # Always use fallback if client not available
+    if client is None:
+        return _fallback_action(observation, task_id)
 
-    Args:
-        observation: The current NegotiationObservation dict.
-        task_id: Current task identifier.
-
-    Returns:
-        Action dict ready to send to POST /step.
-    """
     system_prompt = _SYSTEM_PROMPTS.get(task_id, SYSTEM_PROMPT_TASK1)
 
-    # Build user prompt with full observation context
     step = observation.get("current_step", 0)
     max_steps = observation.get("max_steps", 5)
     remaining = max_steps - step
@@ -165,6 +164,7 @@ def agent_decide(observation: dict, task_id: str) -> dict:
     history = observation.get("negotiation_history", [])
 
     user_prompt = f"""## Current Negotiation State
+
 Task: {task_id}
 Turn: {step} / {max_steps} ({remaining} remaining)
 
@@ -190,16 +190,30 @@ Turn: {step} / {max_steps} ({remaining} remaining)
 - Respond with ONLY valid JSON. No markdown, no explanation outside JSON.
 """
 
-    # SAFE MODE: LLM hata diya (401 error fix)
-    return _fallback_action(observation, task_id)
+    try:
+        response = client.chat.completions.create(
+            model=MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            max_tokens=512,
+            temperature=0.3,
+        )
+        raw = response.choices[0].message.content.strip()
+        # Strip markdown fences if present
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        decision = json.loads(raw)
+        return _decision_to_action(decision, task_id, observation)
+    except Exception as e:
+        print(f"[WARN] LLM call failed: {e}. Using fallback.", flush=True)
+        return _fallback_action(observation, task_id)
 
 
 def _decision_to_action(decision: dict, task_id: str, observation: dict) -> dict:
-    """Convert the LLM's decision dict into the NegotiationAction format.
-
-    The LLM returns: {"offer": {...}, "message": "...", "accept": bool}
-    We convert to:   {"action_type": "accept"/"propose", ...fields}
-    """
     accept = decision.get("accept", False)
     offer = decision.get("offer", {})
     message = decision.get("message", "")
@@ -207,7 +221,6 @@ def _decision_to_action(decision: dict, task_id: str, observation: dict) -> dict
     if accept:
         return {"action_type": "accept", "reasoning": message}
 
-    # Build action based on task type
     action: dict[str, Any] = {"action_type": "propose", "reasoning": message}
 
     if task_id == "task_1":
@@ -233,17 +246,11 @@ def _decision_to_action(decision: dict, task_id: str, observation: dict) -> dict
 
 
 def _fallback_action(observation: dict, task_id: str) -> dict:
-    """Generate a heuristic action when the LLM fails.
-
-    Strategy: propose midpoint between agent ideal and counterparty offer.
-    On last turn: always accept.
-    """
     cp = observation.get("counterparty_offer", {}) or {}
     constraints = observation.get("agent_constraints", {})
     step = observation.get("current_step", 0)
     max_steps = observation.get("max_steps", 5)
 
-    # Last turn → always accept
     if step >= max_steps - 1:
         return {"action_type": "accept", "reasoning": "Last turn — accepting."}
 
@@ -257,7 +264,6 @@ def _fallback_action(observation: dict, task_id: str) -> dict:
             "price": round(proposed, 2),
             "reasoning": "Fallback: midpoint of ideal and current.",
         }
-
     elif task_id == "task_2":
         sal_ideal = constraints.get("salary_ideal", 140000)
         sal_cp = cp.get("salary", 120000) or 120000
@@ -272,7 +278,6 @@ def _fallback_action(observation: dict, task_id: str) -> dict:
             "start_date_weeks": round((start_ideal + start_cp) / 2),
             "reasoning": "Fallback: midpoint across all issues.",
         }
-
     elif task_id == "task_3":
         vid = cp.get("vendor_id", "vendor_a") or "vendor_a"
         cp_price = cp.get("price", 50000) or 50000
@@ -292,164 +297,131 @@ def _fallback_action(observation: dict, task_id: str) -> dict:
 
     return {"action_type": "accept", "reasoning": "Fallback: accepting."}
 
-
 # ---------------------------------------------------------------------------
 # run_task — execute a full episode for one task
 # ---------------------------------------------------------------------------
 
 def run_task(task_id: str) -> dict:
-    """Run a single task episode end-to-end.
+    try:
+        reset_data = call_env("/reset", method="POST", data={"task_id": task_id})
+        if not reset_data or "observation" not in reset_data:
+            print(f'[START] {{"task_id": "{task_id}", "scenario": "ERROR: reset failed"}}', flush=True)
+            print(f'[END] {{"task_id": "{task_id}", "total_reward": 0.0, "steps": 0}}', flush=True)
+            return {"task_id": task_id, "total_reward": 0.0, "steps": 0}
 
-    Logs [START], [STEP], [END] to stdout in the mandatory format.
+        obs = reset_data["observation"]
+        scenario_desc = obs.get("scenario_description", "Unknown")
+        scenario_short = scenario_desc[:80].replace('"', '\\"')
 
-    Args:
-        task_id: "task_1", "task_2", or "task_3"
+        print(f'[START] {{"task_id": "{task_id}", "scenario": "{scenario_short}"}}', flush=True)
 
-    Returns:
-        Dict with task_id, total_reward (grader score), and steps used.
-    """
-    # ── RESET ──
-    reset_data = call_env("/reset", method="POST", data={"task_id": task_id})
-    if not reset_data or "observation" not in reset_data:
-        print(f'[START] {{"task_id": "{task_id}", "scenario": "ERROR: reset failed"}}', flush=True)
+        done = False
+        step_num = 0
+        total_reward = 0.0
+
+        while not done:
+            action = agent_decide(obs, task_id)
+            step_data = call_env("/step", method="POST", data={"action": action})
+
+            if not step_data or "observation" not in step_data:
+                print(f"  [WARN] Step failed, breaking.", flush=True)
+                break
+
+            obs = step_data["observation"]
+            reward = step_data.get("reward", 0.0)
+            done = step_data.get("done", False)
+            step_num += 1
+            total_reward += reward
+
+            action_log = _action_summary(action, task_id)
+            step_log = {
+                "step": step_num,
+                "action": action_log,
+                "reward": round(reward, 4),
+                "done": done,
+            }
+            print(f"[STEP] {json.dumps(step_log)}", flush=True)
+
+        grade_data = call_env("/grade", method="POST", data={"task_id": task_id})
+        grader_score = 0.0
+        if grade_data and "score" in grade_data:
+            grader_score = grade_data["score"]
+
+        end_log = {
+            "task_id": task_id,
+            "total_reward": round(grader_score, 4),
+            "steps": step_num,
+        }
+        print(f"[END] {json.dumps(end_log)}", flush=True)
+        return end_log
+
+    except Exception as e:
+        print(f"[ERROR] run_task({task_id}) crashed: {e}", flush=True)
         print(f'[END] {{"task_id": "{task_id}", "total_reward": 0.0, "steps": 0}}', flush=True)
         return {"task_id": task_id, "total_reward": 0.0, "steps": 0}
 
-    obs = reset_data["observation"]
-    scenario_desc = obs.get("scenario_description", "Unknown")
-    # Truncate scenario for the log line
-    scenario_short = scenario_desc[:80].replace('"', '\\"')
-
-    print(f'[START] {{"task_id": "{task_id}", "scenario": "{scenario_short}"}}', flush=True)
-
-    # ── STEP LOOP ──
-    done = False
-    step_num = 0
-    total_reward = 0.0
-
-    while not done:
-        # Ask the LLM agent for a decision
-        action = agent_decide(obs, task_id)
-        action_type = action.get("action_type", "propose")
-
-        # Execute the action
-        step_data = call_env("/step", method="POST", data={"action": action})
-        if not step_data or "observation" not in step_data:
-            print(f"  [WARN] Step failed, breaking.", flush=True)
-            break
-
-        obs = step_data["observation"]
-        reward = step_data.get("reward", 0.0)
-        done = step_data.get("done", False)
-        info = step_data.get("info", {})
-
-        step_num += 1
-        total_reward += reward
-
-        # Build action summary for logging
-        action_log = _action_summary(action, task_id)
-
-        # ── [STEP] log ──
-        step_log = {
-            "step": step_num,
-            "action": action_log,
-            "reward": round(reward, 4),
-            "done": done,
-        }
-        print(f"[STEP] {json.dumps(step_log)}", flush=True)
-
-    # ── GRADE ──
-    grade_data = call_env("/grade", method="POST", data={"task_id": task_id})
-    grader_score = 0.0
-    if grade_data and "score" in grade_data:
-        grader_score = grade_data["score"]
-
-    # ── [END] log ──
-    end_log = {
-        "task_id": task_id,
-        "total_reward": round(grader_score, 4),
-        "steps": step_num,
-    }
-    print(f"[END] {json.dumps(end_log)}", flush=True)
-
-    return end_log
-
 
 def _action_summary(action: dict, task_id: str) -> dict:
-    """Build a compact action dict for logging (strip reasoning)."""
-    summary: dict[str, Any] = {}
-
     if action.get("action_type") == "accept":
         return {"accept": True}
-
+    summary: dict[str, Any] = {}
     if task_id == "task_1":
         summary["price"] = action.get("price", 0)
     elif task_id == "task_2":
-        if "salary" in action:
-            summary["salary"] = action["salary"]
-        if "remote_days" in action:
-            summary["remote_days"] = action["remote_days"]
-        if "start_date_weeks" in action:
-            summary["start_date_weeks"] = action["start_date_weeks"]
+        for k in ["salary", "remote_days", "start_date_weeks"]:
+            if k in action:
+                summary[k] = action[k]
     elif task_id == "task_3":
-        if "vendor_id" in action:
-            summary["vendor_id"] = action["vendor_id"]
-        if "price" in action:
-            summary["price"] = action["price"]
-        if "delivery_days" in action:
-            summary["delivery_days"] = action["delivery_days"]
-        if "payment_terms_days" in action:
-            summary["payment_terms_days"] = action["payment_terms_days"]
-
+        for k in ["vendor_id", "price", "delivery_days", "payment_terms_days"]:
+            if k in action:
+                summary[k] = action[k]
     return summary
-
 
 # ---------------------------------------------------------------------------
 # MAIN
 # ---------------------------------------------------------------------------
 
 def main():
-    """Run inference on all 3 tasks and report results."""
     print("=" * 60, flush=True)
     print("AI Negotiation Environment — Baseline Inference", flush=True)
-    print(f"  Model:  {MODEL}", flush=True)
-    print(f"  API:    {client.base_url}", flush=True)
-    print(f"  Env:    {ENV_URL}", flush=True)
+    print(f"  Model : {MODEL}", flush=True)
+    print(f"  Env   : {ENV_URL}", flush=True)
     print("=" * 60, flush=True)
 
-    # Verify environment is reachable
-    health = call_env("/health")
-    if not health:
-        print("[ERROR] Environment not reachable. Exiting.", flush=True)
-        sys.exit(1)
-    print(f"  Status: {health.get('status', '?')}", flush=True)
-    print(f"  Env:    {health.get('environment', '?')}", flush=True)
+    # Verify environment is reachable — exit cleanly if not
+    try:
+        health = call_env("/health")
+        if not health:
+            print("[WARN] /health not reachable. Attempting tasks anyway.", flush=True)
+        else:
+            print(f"  Status: {health.get('status', '?')}", flush=True)
+    except Exception as e:
+        print(f"[WARN] Health check failed: {e}", flush=True)
+
     print("-" * 60, flush=True)
 
-    # Run all 3 tasks
     results = []
     start_time = time.time()
 
     for task_id in ["task_1", "task_2", "task_3"]:
         print(f"\n>>> Running {task_id}...", flush=True)
-        result = run_task(task_id)
+        try:
+            result = run_task(task_id)
+        except Exception as e:
+            print(f"[ERROR] {task_id} failed with: {e}", flush=True)
+            result = {"task_id": task_id, "total_reward": 0.0, "steps": 0}
         results.append(result)
-        time.sleep(2)  # Brief pause between tasks
+        time.sleep(2)
 
     elapsed = time.time() - start_time
 
-    # ── Final summary ──
     print("\n" + "=" * 60, flush=True)
     print("BASELINE RESULTS", flush=True)
     print("=" * 60, flush=True)
 
-    task_labels = {
-        "task_1": "easy",
-        "task_2": "medium",
-        "task_3": "hard",
-    }
-
+    task_labels = {"task_1": "easy", "task_2": "medium", "task_3": "hard"}
     total_score = 0.0
+
     for r in results:
         tid = r["task_id"]
         score = r["total_reward"]
@@ -459,9 +431,9 @@ def main():
         total_score += score
 
     avg_score = total_score / len(results) if results else 0.0
-    print(f"\n  Average Score:  {avg_score:.4f}", flush=True)
-    print(f"  Total Time:     {elapsed:.1f}s", flush=True)
-    print(f"  Tasks Run:      {len(results)}", flush=True)
+    print(f"\n  Average Score : {avg_score:.4f}", flush=True)
+    print(f"  Total Time    : {elapsed:.1f}s", flush=True)
+    print(f"  Tasks Run     : {len(results)}", flush=True)
     print("=" * 60, flush=True)
 
 
