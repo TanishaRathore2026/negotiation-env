@@ -1,0 +1,47 @@
+name: negotiation-env
+version: "1.0.0"
+description: >
+  A real-world AI negotiation environment where agents learn to 
+  negotiate price, salary, and vendor contracts through structured 
+  multi-turn dialogue with partial reward signals.
+tags: [openenv, negotiation, rl, multi-issue, real-world]
+author: "<your name>"
+tasks:
+  - id: task_1
+    name: Simple Price Negotiation
+    difficulty: easy
+    max_turns: 5
+    description: Negotiate price of a used laptop as a buyer
+  - id: task_2
+    name: Job Offer Negotiation
+    difficulty: medium
+    max_turns: 8
+    description: Negotiate salary, remote days, and start date
+  - id: task_3
+    name: Vendor Contract Negotiation
+    difficulty: hard
+    max_turns: 12
+    description: Negotiate with 2 vendors on price, delivery, payment terms
+action_space:
+  type: object
+  fields:
+    offer: "dict[str, float] - values for each negotiation issue"
+    message: "str - agent reasoning"
+    accept: "bool - whether agent accepts current offer"
+observation_space:
+  type: object
+  fields:
+    turn: "int - current turn number"
+    max_turns: "int - maximum allowed turns"
+    current_offer: "dict[str, float] - opponent's current offer"
+    opponent_last_offer: "dict[str, float] - opponent's previous offer"
+    context: "str - scenario description"
+    issues: "list[str] - negotiation issues"
+    constraints: "dict[str, float] - agent's own constraints"
+reward_range: [0.0, 1.0]
+endpoints:
+  reset: POST /reset
+  step: POST /step
+  state: GET /state
+  tasks: GET /tasks
+  grade: POST /grade
