@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 import os
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, Optional
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
@@ -99,7 +99,7 @@ class ResetRequest(BaseModel):
         "task_1",
         description="Which task to load: task_1 (easy), task_2 (medium), task_3 (hard)",
     )
-    scenario_id: str | None = Field(
+    scenario_id: Optional[str] = Field(
         None,
         description="Optional specific scenario ID. Random if omitted.",
     )
@@ -123,7 +123,7 @@ class StepResponse(BaseModel):
 class GradeRequest(BaseModel):
     """Body for POST /grade."""
     task_id: str = Field(
-        ..., description="Task to grade: task_1, task_2, or task_3",
+        "task_1", description="Task to grade: task_1, task_2, or task_3",
     )
 
 
@@ -150,12 +150,7 @@ class TaskInfo(BaseModel):
 # ── GET /health ──────────────────────────────────────────────
 @app.get("/health", tags=["health"])
 async def health():
-    """Lightweight health / ping endpoint.
-
-    Returns 200 with environment metadata.  This is the endpoint
-    the OpenEnv automated validator pings to confirm the Space
-    is alive.
-    """
+    """Lightweight health / ping endpoint."""
     return {
         "status": "ok",
         "environment": "negotiation-env",
@@ -195,25 +190,18 @@ async def list_tasks():
 
 # ── POST /reset ──────────────────────────────────────────────
 @app.post("/reset", tags=["environment"])
-async def reset(request: ResetRequest):
-    """Reset the environment and begin a new episode.
-
-    Args:
-        request: ResetRequest with task_id and optional scenario_id.
-
-    Returns:
-        JSON with the initial NegotiationObservation.
-    """
+async def reset(request: Optional[ResetRequest] = None):
+    """Reset the environment and begin a new episode."""
+    if request is None:
+        request = ResetRequest()
     try:
         observation = env.reset(
             task_id=request.task_id,
             scenario_id=request.scenario_id,
         )
         logger.info(
-            "RESET  task=%s  scenario=%s  max_steps=%d",
+            "RESET  task=%s  max_steps=%d",
             request.task_id,
-            observation.counterparty_offer.model_dump(exclude_none=True)
-            if observation.counterparty_offer else "N/A",
             observation.max_steps,
         )
         return JSONResponse(
@@ -222,12 +210,10 @@ async def reset(request: ResetRequest):
         )
 
     except ValueError as exc:
-        # Bad task_id or scenario_id → 400
         logger.warning("RESET failed (400): %s", exc)
         raise HTTPException(status_code=400, detail=str(exc))
 
     except Exception as exc:
-        # Unexpected server-side error → 500
         logger.exception("RESET failed (500)")
         raise HTTPException(status_code=500, detail=f"Internal error: {exc}")
 
@@ -235,14 +221,7 @@ async def reset(request: ResetRequest):
 # ── POST /step ───────────────────────────────────────────────
 @app.post("/step", response_model=StepResponse, tags=["environment"])
 async def step(request: StepRequest):
-    """Execute one negotiation step.
-
-    Args:
-        request: StepRequest containing a NegotiationAction.
-
-    Returns:
-        StepResponse with observation, reward, done flag, and info dict.
-    """
+    """Execute one negotiation step."""
     try:
         observation, reward, done, info = env.step(request.action)
 
@@ -270,12 +249,7 @@ async def step(request: StepRequest):
 # ── GET /state ───────────────────────────────────────────────
 @app.get("/state", tags=["environment"])
 async def state():
-    """Return the full internal environment state.
-
-    Includes hidden information (opponent constraints, vendor floors)
-    that is NOT visible to the agent.  Used for debugging, grading,
-    and the OpenEnv state() contract.
-    """
+    """Return the full internal environment state."""
     try:
         full_state = env.state()
         return JSONResponse(
@@ -290,26 +264,13 @@ async def state():
 
 # ── POST /grade ──────────────────────────────────────────────
 @app.post("/grade", response_model=GradeResponse, tags=["grading"])
-async def grade(request: GradeRequest):
-    """Run the deterministic grader on the current episode.
-
-    Reads the environment's internal state and computes a final
-    score in [0.0, 1.0] using the grader for the specified task.
-
-    Args:
-        request: GradeRequest with task_id.
-
-    Returns:
-        GradeResponse with task_id and score.
-    """
+async def grade(request: Optional[GradeRequest] = None):
+    """Run the deterministic grader on the current episode."""
+    if request is None:
+        request = GradeRequest()
     try:
-        # Look up the task (validates task_id)
         task = get_task(request.task_id)
-
-        # Get current internal state
         current_state = env.state()
-
-        # Run the deterministic grader
         score = task.grade(current_state)
 
         logger.info(
@@ -322,7 +283,6 @@ async def grade(request: GradeRequest):
         return GradeResponse(task_id=request.task_id, score=round(score, 4))
 
     except ValueError as exc:
-        # Unknown task_id → 400
         logger.warning("GRADE failed (400): %s", exc)
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -336,17 +296,12 @@ async def grade(request: GradeRequest):
 # =========================================================================
 
 def _serialize(obj: Any) -> Any:
-    """Recursively convert enums and non-JSON-friendly types to strings.
-
-    Ensures JSONResponse can serialise the full state dict even when
-    it contains NegotiationStatus or TaskDifficulty enum values.
-    """
+    """Recursively convert enums and non-JSON-friendly types to strings."""
     if isinstance(obj, dict):
         return {k: _serialize(v) for k, v in obj.items()}
     elif isinstance(obj, list):
         return [_serialize(v) for v in obj]
     elif hasattr(obj, "value"):
-        # Enum → its .value string
         return obj.value
     return obj
 
