@@ -1,25 +1,11 @@
 """
-inference.py — Mandatory baseline inference script for the AI Negotiation
-Environment (Meta × Scalar OpenEnv Hackathon).
+inference.py — Inference script for the AI Negotiation Environment.
 
-Runs an LLM agent against all 3 tasks sequentially and produces baseline
-scores with strict structured logging.
-
-Required environment variables:
-  API_BASE_URL — LLM API endpoint (default: https://api-inference.huggingface.co/v1)
+Required environment variables (injected by validator):
+  API_BASE_URL — LLM proxy endpoint
+  API_KEY      — Proxy API key
   MODEL_NAME   — Model identifier (default: meta-llama/Llama-3.1-8B-Instruct)
-  HF_TOKEN     — Hugging Face API token
-
-Structured log format (MANDATORY — do not deviate):
-  [START] {"task_id": "...", "scenario": "..."}
-  [STEP]  {"step": N, "action": {...}, "reward": 0.0, "done": false}
-  [END]   {"task_id": "...", "total_reward": 0.72, "steps": N}
-
-Usage:
-  export API_BASE_URL=https://api.openai.com/v1
-  export MODEL_NAME=gpt-4o-mini
-  export HF_TOKEN=your_key_here
-  python inference.py
+  ENV_URL      — Environment server URL (default: http://localhost:7860)
 """
 
 from __future__ import annotations
@@ -31,32 +17,27 @@ import time
 from typing import Any
 
 import requests
+from openai import OpenAI
 
 # ---------------------------------------------------------------------------
-# Configuration — all from environment variables
+# Configuration — strictly from environment (crash loudly if missing)
 # ---------------------------------------------------------------------------
 
-API_BASE_URL = os.environ.get("API_BASE_URL", "https://router.huggingface.co/v1")
-API_KEY = os.environ.get("API_KEY") or os.environ.get("HF_TOKEN", "hf-placeholder")
+API_BASE_URL = os.environ["API_BASE_URL"]
+API_KEY = os.environ["API_KEY"]
 MODEL = os.environ.get("MODEL_NAME", "meta-llama/Llama-3.1-8B-Instruct")
 ENV_URL = os.environ.get("ENV_URL", "http://localhost:7860")
 
 # ---------------------------------------------------------------------------
-# Safe OpenAI client initialization — NEVER crash at module level
+# OpenAI client — must use injected base_url and api_key
 # ---------------------------------------------------------------------------
 
-client = None
+client = OpenAI(
+    base_url=API_BASE_URL,
+    api_key=API_KEY,
+)
 
-try:
-    from openai import OpenAI
-    client = OpenAI(
-        base_url=API_BASE_URL,
-        api_key=API_KEY,
-    )
-    print(f"[INFO] OpenAI client initialized. Base URL: {API_BASE_URL}", flush=True)
-except Exception as e:
-    print(f"[WARN] Could not initialize OpenAI client: {e}", flush=True)
-    print("[WARN] Will use fallback heuristic agent.", flush=True)
+print(f"[INFO] OpenAI client initialized. Base URL: {API_BASE_URL}", flush=True)
 
 # ---------------------------------------------------------------------------
 # call_env — HTTP helper for environment API
@@ -144,14 +125,10 @@ _SYSTEM_PROMPTS = {
 }
 
 # ---------------------------------------------------------------------------
-# agent_decide — ask the LLM for the next action (with safe fallback)
+# agent_decide — always calls the LLM via the injected proxy
 # ---------------------------------------------------------------------------
 
 def agent_decide(observation: dict, task_id: str) -> dict:
-    # Always use fallback if client not available
-    if client is None:
-        return _fallback_action(observation, task_id)
-
     system_prompt = _SYSTEM_PROMPTS.get(task_id, SYSTEM_PROMPT_TASK1)
 
     step = observation.get("current_step", 0)
@@ -190,27 +167,24 @@ Turn: {step} / {max_steps} ({remaining} remaining)
 - Respond with ONLY valid JSON. No markdown, no explanation outside JSON.
 """
 
-    try:
-        response = client.chat.completions.create(
-            model=MODEL,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            max_tokens=512,
-            temperature=0.3,
-        )
-        raw = response.choices[0].message.content.strip()
-        # Strip markdown fences if present
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-        decision = json.loads(raw)
-        return _decision_to_action(decision, task_id, observation)
-    except Exception as e:
-        print(f"[WARN] LLM call failed: {e}. Using fallback.", flush=True)
-        return _fallback_action(observation, task_id)
+    response = client.chat.completions.create(
+        model=MODEL,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        max_tokens=512,
+        temperature=0.3,
+    )
+
+    raw = response.choices[0].message.content.strip()
+    if raw.startswith("```"):
+        raw = raw.split("```")[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+
+    decision = json.loads(raw)
+    return _decision_to_action(decision, task_id, observation)
 
 
 def _decision_to_action(decision: dict, task_id: str, observation: dict) -> dict:
@@ -244,121 +218,62 @@ def _decision_to_action(decision: dict, task_id: str, observation: dict) -> dict
 
     return action
 
-
-def _fallback_action(observation: dict, task_id: str) -> dict:
-    cp = observation.get("counterparty_offer", {}) or {}
-    constraints = observation.get("agent_constraints", {})
-    step = observation.get("current_step", 0)
-    max_steps = observation.get("max_steps", 5)
-
-    if step >= max_steps - 1:
-        return {"action_type": "accept", "reasoning": "Last turn — accepting."}
-
-    if task_id == "task_1":
-        cp_price = cp.get("price", 0)
-        ideal = constraints.get("ideal_price", cp_price * 0.7)
-        budget = constraints.get("max_budget", cp_price)
-        proposed = min((ideal + cp_price) / 2.0, budget)
-        return {
-            "action_type": "propose",
-            "price": round(proposed, 2),
-            "reasoning": "Fallback: midpoint of ideal and current.",
-        }
-    elif task_id == "task_2":
-        sal_ideal = constraints.get("salary_ideal", 140000)
-        sal_cp = cp.get("salary", 120000) or 120000
-        rem_ideal = constraints.get("remote_days_ideal", 4)
-        rem_cp = cp.get("remote_days", 1) or 1
-        start_ideal = constraints.get("start_date_weeks_ideal", 5)
-        start_cp = cp.get("start_date_weeks", 2) or 2
-        return {
-            "action_type": "propose",
-            "salary": round((sal_ideal + sal_cp) / 2.0, 2),
-            "remote_days": round((rem_ideal + rem_cp) / 2),
-            "start_date_weeks": round((start_ideal + start_cp) / 2),
-            "reasoning": "Fallback: midpoint across all issues.",
-        }
-    elif task_id == "task_3":
-        vid = cp.get("vendor_id", "vendor_a") or "vendor_a"
-        cp_price = cp.get("price", 50000) or 50000
-        budget = constraints.get("budget", cp_price)
-        ideal_del = constraints.get("ideal_delivery_days", 45)
-        cp_del = cp.get("delivery_days", 90) or 90
-        ideal_pay = constraints.get("ideal_payment_terms_days", 60)
-        cp_pay = cp.get("payment_terms_days", 15) or 15
-        return {
-            "action_type": "propose",
-            "vendor_id": vid,
-            "price": round((budget * 0.75 + cp_price) / 2.0, 2),
-            "delivery_days": round((ideal_del + cp_del) / 2),
-            "payment_terms_days": round((ideal_pay + cp_pay) / 2),
-            "reasoning": "Fallback: midpoint targeting better deal.",
-        }
-
-    return {"action_type": "accept", "reasoning": "Fallback: accepting."}
-
 # ---------------------------------------------------------------------------
 # run_task — execute a full episode for one task
 # ---------------------------------------------------------------------------
 
 def run_task(task_id: str) -> dict:
-    try:
-        reset_data = call_env("/reset", method="POST", data={"task_id": task_id})
-        if not reset_data or "observation" not in reset_data:
-            print(f'[START] {{"task_id": "{task_id}", "scenario": "ERROR: reset failed"}}', flush=True)
-            print(f'[END] {{"task_id": "{task_id}", "total_reward": 0.0, "steps": 0}}', flush=True)
-            return {"task_id": task_id, "total_reward": 0.0, "steps": 0}
-
-        obs = reset_data["observation"]
-        scenario_desc = obs.get("scenario_description", "Unknown")
-        scenario_short = scenario_desc[:80].replace('"', '\\"')
-
-        print(f'[START] {{"task_id": "{task_id}", "scenario": "{scenario_short}"}}', flush=True)
-
-        done = False
-        step_num = 0
-        total_reward = 0.0
-
-        while not done:
-            action = agent_decide(obs, task_id)
-            step_data = call_env("/step", method="POST", data={"action": action})
-
-            if not step_data or "observation" not in step_data:
-                print(f"  [WARN] Step failed, breaking.", flush=True)
-                break
-
-            obs = step_data["observation"]
-            reward = step_data.get("reward", 0.0)
-            done = step_data.get("done", False)
-            step_num += 1
-            total_reward += reward
-
-            action_log = _action_summary(action, task_id)
-            step_log = {
-                "step": step_num,
-                "action": action_log,
-                "reward": round(reward, 4),
-                "done": done,
-            }
-            print(f"[STEP] {json.dumps(step_log)}", flush=True)
-
-        grade_data = call_env("/grade", method="POST", data={"task_id": task_id})
-        grader_score = 0.0
-        if grade_data and "score" in grade_data:
-            grader_score = grade_data["score"]
-
-        end_log = {
-            "task_id": task_id,
-            "total_reward": round(grader_score, 4),
-            "steps": step_num,
-        }
-        print(f"[END] {json.dumps(end_log)}", flush=True)
-        return end_log
-
-    except Exception as e:
-        print(f"[ERROR] run_task({task_id}) crashed: {e}", flush=True)
+    reset_data = call_env("/reset", method="POST", data={"task_id": task_id})
+    if not reset_data or "observation" not in reset_data:
+        print(f'[START] {{"task_id": "{task_id}", "scenario": "ERROR: reset failed"}}', flush=True)
         print(f'[END] {{"task_id": "{task_id}", "total_reward": 0.0, "steps": 0}}', flush=True)
         return {"task_id": task_id, "total_reward": 0.0, "steps": 0}
+
+    obs = reset_data["observation"]
+    scenario_desc = obs.get("scenario_description", "Unknown")
+    scenario_short = scenario_desc[:80].replace('"', '\\"')
+
+    print(f'[START] {{"task_id": "{task_id}", "scenario": "{scenario_short}"}}', flush=True)
+
+    done = False
+    step_num = 0
+    total_reward = 0.0
+
+    while not done:
+        action = agent_decide(obs, task_id)
+        step_data = call_env("/step", method="POST", data={"action": action})
+
+        if not step_data or "observation" not in step_data:
+            print(f"  [WARN] Step failed, breaking.", flush=True)
+            break
+
+        obs = step_data["observation"]
+        reward = step_data.get("reward", 0.0)
+        done = step_data.get("done", False)
+        step_num += 1
+        total_reward += reward
+
+        action_log = _action_summary(action, task_id)
+        step_log = {
+            "step": step_num,
+            "action": action_log,
+            "reward": round(reward, 4),
+            "done": done,
+        }
+        print(f"[STEP] {json.dumps(step_log)}", flush=True)
+
+    grade_data = call_env("/grade", method="POST", data={"task_id": task_id})
+    grader_score = 0.0
+    if grade_data and "score" in grade_data:
+        grader_score = grade_data["score"]
+
+    end_log = {
+        "task_id": task_id,
+        "total_reward": round(grader_score, 4),
+        "steps": step_num,
+    }
+    print(f"[END] {json.dumps(end_log)}", flush=True)
+    return end_log
 
 
 def _action_summary(action: dict, task_id: str) -> dict:
@@ -383,20 +298,17 @@ def _action_summary(action: dict, task_id: str) -> dict:
 
 def main():
     print("=" * 60, flush=True)
-    print("AI Negotiation Environment — Baseline Inference", flush=True)
-    print(f"  Model : {MODEL}", flush=True)
-    print(f"  Env   : {ENV_URL}", flush=True)
+    print("AI Negotiation Environment — Inference", flush=True)
+    print(f"  Model      : {MODEL}", flush=True)
+    print(f"  API Base   : {API_BASE_URL}", flush=True)
+    print(f"  Env URL    : {ENV_URL}", flush=True)
     print("=" * 60, flush=True)
 
-    # Verify environment is reachable — exit cleanly if not
-    try:
-        health = call_env("/health")
-        if not health:
-            print("[WARN] /health not reachable. Attempting tasks anyway.", flush=True)
-        else:
-            print(f"  Status: {health.get('status', '?')}", flush=True)
-    except Exception as e:
-        print(f"[WARN] Health check failed: {e}", flush=True)
+    health = call_env("/health")
+    if health:
+        print(f"  Env Status : {health.get('status', '?')}", flush=True)
+    else:
+        print("[WARN] /health not reachable. Attempting tasks anyway.", flush=True)
 
     print("-" * 60, flush=True)
 
@@ -405,18 +317,14 @@ def main():
 
     for task_id in ["task_1", "task_2", "task_3"]:
         print(f"\n>>> Running {task_id}...", flush=True)
-        try:
-            result = run_task(task_id)
-        except Exception as e:
-            print(f"[ERROR] {task_id} failed with: {e}", flush=True)
-            result = {"task_id": task_id, "total_reward": 0.0, "steps": 0}
+        result = run_task(task_id)
         results.append(result)
         time.sleep(2)
 
     elapsed = time.time() - start_time
 
     print("\n" + "=" * 60, flush=True)
-    print("BASELINE RESULTS", flush=True)
+    print("RESULTS", flush=True)
     print("=" * 60, flush=True)
 
     task_labels = {"task_1": "easy", "task_2": "medium", "task_3": "hard"}
