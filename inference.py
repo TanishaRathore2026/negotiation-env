@@ -37,7 +37,7 @@ import requests
 # ---------------------------------------------------------------------------
 
 API_BASE_URL = os.environ.get("API_BASE_URL", "https://router.huggingface.co/v1")
-HF_TOKEN = os.environ.get("HF_TOKEN", "")
+API_KEY = os.environ.get("API_KEY") or os.environ.get("HF_TOKEN", "hf-placeholder")
 MODEL = os.environ.get("MODEL_NAME", "meta-llama/Llama-3.1-8B-Instruct")
 ENV_URL = os.environ.get("ENV_URL", "http://localhost:7860")
 
@@ -50,9 +50,9 @@ client = None
 try:
     from openai import OpenAI
     client = OpenAI(
-        base_url=API_BASE_URL,
-        api_key=HF_TOKEN if HF_TOKEN else "hf-placeholder",
-    )
+    base_url=API_BASE_URL,
+    api_key=API_KEY,
+)
     print(f"[INFO] OpenAI client initialized. Base URL: {API_BASE_URL}", flush=True)
 except Exception as e:
     print(f"[WARN] Could not initialize OpenAI client: {e}", flush=True)
