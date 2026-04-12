@@ -12,10 +12,10 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 import time
 from typing import Any
 
+import httpx
 import requests
 from openai import OpenAI
 
@@ -29,15 +29,20 @@ MODEL = os.environ.get("MODEL_NAME", "meta-llama/Llama-3.1-8B-Instruct")
 ENV_URL = os.environ.get("ENV_URL", "http://localhost:7860")
 
 # ---------------------------------------------------------------------------
-# OpenAI client — must use injected base_url and api_key
+# OpenAI client — initialized with explicit httpx client to avoid proxy issues
 # ---------------------------------------------------------------------------
 
 client = OpenAI(
     base_url=API_BASE_URL,
     api_key=API_KEY,
+    http_client=httpx.Client(
+        base_url=API_BASE_URL,
+        follow_redirects=True,
+    ),
 )
 
 print(f"[INFO] OpenAI client initialized. Base URL: {API_BASE_URL}", flush=True)
+print(f"[INFO] Model: {MODEL}", flush=True)
 
 # ---------------------------------------------------------------------------
 # call_env — HTTP helper for environment API
