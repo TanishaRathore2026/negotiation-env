@@ -1,6 +1,25 @@
 """
 inference.py — Mandatory baseline inference script for the AI Negotiation
 Environment (Meta × Scalar OpenEnv Hackathon).
+
+Runs an LLM agent against all 3 tasks sequentially and produces baseline
+scores with strict structured logging.
+
+Required environment variables:
+  API_BASE_URL — LLM API endpoint (default: https://api-inference.huggingface.co/v1)
+  MODEL_NAME   — Model identifier (default: meta-llama/Llama-3.1-8B-Instruct)
+  HF_TOKEN     — Hugging Face API token
+
+Structured log format (MANDATORY — do not deviate):
+  [START] {"task_id": "...", "scenario": "..."}
+  [STEP]  {"step": N, "action": {...}, "reward": 0.0, "done": false}
+  [END]   {"task_id": "...", "total_reward": 0.72, "steps": N}
+
+Usage:
+  export API_BASE_URL=https://api.openai.com/v1
+  export MODEL_NAME=gpt-4o-mini
+  export HF_TOKEN=your_key_here
+  python inference.py
 """
 
 from __future__ import annotations
@@ -14,16 +33,16 @@ from typing import Any
 import requests
 
 # ---------------------------------------------------------------------------
-# Configuration — strictly from environment variables (no fallbacks for keys)
+# Configuration — all from environment variables
 # ---------------------------------------------------------------------------
 
-API_BASE_URL = os.environ["API_BASE_URL"]          # MUST be set — no default
-API_KEY      = os.environ["API_KEY"]               # MUST be set — no default
-MODEL        = os.environ.get("MODEL_NAME", "meta-llama/Llama-3.1-8B-Instruct")
-ENV_URL      = os.environ.get("ENV_URL", "http://localhost:7860")
+API_BASE_URL = os.environ.get("API_BASE_URL", "https://router.huggingface.co/v1")
+API_KEY = os.environ.get("API_KEY") or os.environ.get("HF_TOKEN", "hf-placeholder")
+MODEL = os.environ.get("MODEL_NAME", "meta-llama/Llama-3.1-8B-Instruct")
+ENV_URL = os.environ.get("ENV_URL", "http://localhost:7860")
 
 # ---------------------------------------------------------------------------
-# OpenAI client — initialized strictly with injected env vars
+# Safe OpenAI client initialization — NEVER crash at module level
 # ---------------------------------------------------------------------------
 
 client = None
@@ -129,19 +148,20 @@ _SYSTEM_PROMPTS = {
 # ---------------------------------------------------------------------------
 
 def agent_decide(observation: dict, task_id: str) -> dict:
+    # Always use fallback if client not available
     if client is None:
         return _fallback_action(observation, task_id)
 
     system_prompt = _SYSTEM_PROMPTS.get(task_id, SYSTEM_PROMPT_TASK1)
 
-    step       = observation.get("current_step", 0)
-    max_steps  = observation.get("max_steps", 5)
-    remaining  = max_steps - step
-    desc       = observation.get("scenario_description", "")
+    step = observation.get("current_step", 0)
+    max_steps = observation.get("max_steps", 5)
+    remaining = max_steps - step
+    desc = observation.get("scenario_description", "")
     constraints = observation.get("agent_constraints", {})
-    cp_offer   = observation.get("counterparty_offer", {})
+    cp_offer = observation.get("counterparty_offer", {})
     cp_message = observation.get("counterparty_message", "")
-    history    = observation.get("negotiation_history", [])
+    history = observation.get("negotiation_history", [])
 
     user_prompt = f"""## Current Negotiation State
 
@@ -175,12 +195,13 @@ Turn: {step} / {max_steps} ({remaining} remaining)
             model=MODEL,
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user",   "content": user_prompt},
+                {"role": "user", "content": user_prompt},
             ],
             max_tokens=512,
             temperature=0.3,
         )
         raw = response.choices[0].message.content.strip()
+        # Strip markdown fences if present
         if raw.startswith("```"):
             raw = raw.split("```")[1]
             if raw.startswith("json"):
@@ -193,8 +214,8 @@ Turn: {step} / {max_steps} ({remaining} remaining)
 
 
 def _decision_to_action(decision: dict, task_id: str, observation: dict) -> dict:
-    accept  = decision.get("accept", False)
-    offer   = decision.get("offer", {})
+    accept = decision.get("accept", False)
+    offer = decision.get("offer", {})
     message = decision.get("message", "")
 
     if accept:
@@ -205,60 +226,74 @@ def _decision_to_action(decision: dict, task_id: str, observation: dict) -> dict
     if task_id == "task_1":
         action["price"] = offer.get("price", 0)
     elif task_id == "task_2":
-        for k in ["salary", "remote_days", "start_date_weeks"]:
-            if k in offer:
-                action[k] = offer[k]
+        if "salary" in offer:
+            action["salary"] = offer["salary"]
+        if "remote_days" in offer:
+            action["remote_days"] = offer["remote_days"]
+        if "start_date_weeks" in offer:
+            action["start_date_weeks"] = offer["start_date_weeks"]
     elif task_id == "task_3":
-        for k in ["vendor_id", "price", "delivery_days", "payment_terms_days"]:
-            if k in offer:
-                action[k] = offer[k]
+        if "vendor_id" in offer:
+            action["vendor_id"] = offer["vendor_id"]
+        if "price" in offer:
+            action["price"] = offer["price"]
+        if "delivery_days" in offer:
+            action["delivery_days"] = offer["delivery_days"]
+        if "payment_terms_days" in offer:
+            action["payment_terms_days"] = offer["payment_terms_days"]
 
     return action
 
 
 def _fallback_action(observation: dict, task_id: str) -> dict:
-    cp          = observation.get("counterparty_offer", {}) or {}
+    cp = observation.get("counterparty_offer", {}) or {}
     constraints = observation.get("agent_constraints", {})
-    step        = observation.get("current_step", 0)
-    max_steps   = observation.get("max_steps", 5)
+    step = observation.get("current_step", 0)
+    max_steps = observation.get("max_steps", 5)
 
     if step >= max_steps - 1:
         return {"action_type": "accept", "reasoning": "Last turn — accepting."}
 
     if task_id == "task_1":
         cp_price = cp.get("price", 0)
-        ideal    = constraints.get("ideal_price", cp_price * 0.7)
-        budget   = constraints.get("max_budget", cp_price)
+        ideal = constraints.get("ideal_price", cp_price * 0.7)
+        budget = constraints.get("max_budget", cp_price)
         proposed = min((ideal + cp_price) / 2.0, budget)
-        return {"action_type": "propose", "price": round(proposed, 2),
-                "reasoning": "Fallback: midpoint of ideal and current."}
-
+        return {
+            "action_type": "propose",
+            "price": round(proposed, 2),
+            "reasoning": "Fallback: midpoint of ideal and current.",
+        }
     elif task_id == "task_2":
-        sal_ideal   = constraints.get("salary_ideal", 140000)
-        sal_cp      = cp.get("salary", 120000) or 120000
-        rem_ideal   = constraints.get("remote_days_ideal", 4)
-        rem_cp      = cp.get("remote_days", 1) or 1
+        sal_ideal = constraints.get("salary_ideal", 140000)
+        sal_cp = cp.get("salary", 120000) or 120000
+        rem_ideal = constraints.get("remote_days_ideal", 4)
+        rem_cp = cp.get("remote_days", 1) or 1
         start_ideal = constraints.get("start_date_weeks_ideal", 5)
-        start_cp    = cp.get("start_date_weeks", 2) or 2
-        return {"action_type": "propose",
-                "salary": round((sal_ideal + sal_cp) / 2.0, 2),
-                "remote_days": round((rem_ideal + rem_cp) / 2),
-                "start_date_weeks": round((start_ideal + start_cp) / 2),
-                "reasoning": "Fallback: midpoint across all issues."}
-
+        start_cp = cp.get("start_date_weeks", 2) or 2
+        return {
+            "action_type": "propose",
+            "salary": round((sal_ideal + sal_cp) / 2.0, 2),
+            "remote_days": round((rem_ideal + rem_cp) / 2),
+            "start_date_weeks": round((start_ideal + start_cp) / 2),
+            "reasoning": "Fallback: midpoint across all issues.",
+        }
     elif task_id == "task_3":
-        vid      = cp.get("vendor_id", "vendor_a") or "vendor_a"
+        vid = cp.get("vendor_id", "vendor_a") or "vendor_a"
         cp_price = cp.get("price", 50000) or 50000
-        budget   = constraints.get("budget", cp_price)
+        budget = constraints.get("budget", cp_price)
         ideal_del = constraints.get("ideal_delivery_days", 45)
-        cp_del    = cp.get("delivery_days", 90) or 90
+        cp_del = cp.get("delivery_days", 90) or 90
         ideal_pay = constraints.get("ideal_payment_terms_days", 60)
-        cp_pay    = cp.get("payment_terms_days", 15) or 15
-        return {"action_type": "propose", "vendor_id": vid,
-                "price": round((budget * 0.75 + cp_price) / 2.0, 2),
-                "delivery_days": round((ideal_del + cp_del) / 2),
-                "payment_terms_days": round((ideal_pay + cp_pay) / 2),
-                "reasoning": "Fallback: midpoint targeting better deal."}
+        cp_pay = cp.get("payment_terms_days", 15) or 15
+        return {
+            "action_type": "propose",
+            "vendor_id": vid,
+            "price": round((budget * 0.75 + cp_price) / 2.0, 2),
+            "delivery_days": round((ideal_del + cp_del) / 2),
+            "payment_terms_days": round((ideal_pay + cp_pay) / 2),
+            "reasoning": "Fallback: midpoint targeting better deal.",
+        }
 
     return {"action_type": "accept", "reasoning": "Fallback: accepting."}
 
@@ -275,38 +310,48 @@ def run_task(task_id: str) -> dict:
             return {"task_id": task_id, "total_reward": 0.0, "steps": 0}
 
         obs = reset_data["observation"]
-        scenario_desc  = obs.get("scenario_description", "Unknown")
+        scenario_desc = obs.get("scenario_description", "Unknown")
         scenario_short = scenario_desc[:80].replace('"', '\\"')
 
         print(f'[START] {{"task_id": "{task_id}", "scenario": "{scenario_short}"}}', flush=True)
 
-        done         = False
-        step_num     = 0
+        done = False
+        step_num = 0
         total_reward = 0.0
 
         while not done:
-            action    = agent_decide(obs, task_id)
+            action = agent_decide(obs, task_id)
             step_data = call_env("/step", method="POST", data={"action": action})
 
             if not step_data or "observation" not in step_data:
-                print("[WARN] Step failed, breaking.", flush=True)
+                print(f"  [WARN] Step failed, breaking.", flush=True)
                 break
 
-            obs          = step_data["observation"]
-            reward       = step_data.get("reward", 0.0)
-            done         = step_data.get("done", False)
-            step_num    += 1
+            obs = step_data["observation"]
+            reward = step_data.get("reward", 0.0)
+            done = step_data.get("done", False)
+            step_num += 1
             total_reward += reward
 
             action_log = _action_summary(action, task_id)
-            step_log   = {"step": step_num, "action": action_log,
-                          "reward": round(reward, 4), "done": done}
+            step_log = {
+                "step": step_num,
+                "action": action_log,
+                "reward": round(reward, 4),
+                "done": done,
+            }
             print(f"[STEP] {json.dumps(step_log)}", flush=True)
 
-        grade_data   = call_env("/grade", method="POST", data={"task_id": task_id})
-        grader_score = grade_data.get("score", 0.0) if grade_data else 0.0
+        grade_data = call_env("/grade", method="POST", data={"task_id": task_id})
+        grader_score = 0.0
+        if grade_data and "score" in grade_data:
+            grader_score = grade_data["score"]
 
-        end_log = {"task_id": task_id, "total_reward": round(grader_score, 4), "steps": step_num}
+        end_log = {
+            "task_id": task_id,
+            "total_reward": round(grader_score, 4),
+            "steps": step_num,
+        }
         print(f"[END] {json.dumps(end_log)}", flush=True)
         return end_log
 
@@ -343,6 +388,7 @@ def main():
     print(f"  Env   : {ENV_URL}", flush=True)
     print("=" * 60, flush=True)
 
+    # Verify environment is reachable — exit cleanly if not
     try:
         health = call_env("/health")
         if not health:
@@ -354,7 +400,7 @@ def main():
 
     print("-" * 60, flush=True)
 
-    results    = []
+    results = []
     start_time = time.time()
 
     for task_id in ["task_1", "task_2", "task_3"]:
@@ -377,10 +423,10 @@ def main():
     total_score = 0.0
 
     for r in results:
-        tid   = r["task_id"]
+        tid = r["task_id"]
         score = r["total_reward"]
         steps = r["steps"]
-        diff  = task_labels.get(tid, "?")
+        diff = task_labels.get(tid, "?")
         print(f"  {tid} ({diff:6s}): score={score:.4f}  steps={steps}", flush=True)
         total_score += score
 
